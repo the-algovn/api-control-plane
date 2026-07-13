@@ -186,6 +186,7 @@ kind: Service
 metadata:
   name: rabbitmq
   namespace: rabbitmq
+  labels: { app: rabbitmq }   # VMServiceScrape selects Services by THEIR labels
 spec:
   selector: { app: rabbitmq }
   ports:
@@ -3473,6 +3474,7 @@ kind: Service
 metadata:
   name: api-control-plane
   namespace: api-control-plane
+  labels: { app: api-control-plane }   # VMServiceScrape selects Services by THEIR labels
 spec:
   selector: { app: api-control-plane }
   ports:
@@ -3602,6 +3604,7 @@ kind: Service
 metadata:
   name: demo-service
   namespace: demo-service
+  labels: { app: demo-service }   # VMServiceScrape selects Services by THEIR labels
 spec:
   clusterIP: None          # headless: enables grpc-go dns:/// round_robin later
   selector: { app: demo-service }
