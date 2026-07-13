@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -136,13 +137,15 @@ func newPublisher(ctx context.Context, url string, logger *slog.Logger) func(str
 	return func(channel string, body []byte) {
 		mu.Lock()
 		defer mu.Unlock()
-		if cur == nil || cur.c.IsClosed() {
+		if cur == nil || cur.c.IsClosed() || cur.ch.IsClosed() {
 			cur = dial()
 			if cur == nil {
 				return
 			}
 		}
-		err := cur.ch.PublishWithContext(ctx, "events", channel, false, false,
+		pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		err := cur.ch.PublishWithContext(pubCtx, "events", channel, false, false,
 			amqp.Publishing{ContentType: "application/json", Body: body})
 		if err != nil {
 			logger.Warn("publish failed", "channel", channel, "err", err)
