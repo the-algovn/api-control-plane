@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package algovn.testsvc.v1;
+
+option go_package = "github.com/the-algovn/api-control-plane/internal/testsvc/gen;testsvcv1";
+
+service TestService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Fail(FailRequest) returns (EchoResponse);
+  rpc Slow(SlowRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+  int32 number = 2;
+}
+
+message EchoResponse {
+  string message = 1;
+  int32 number = 2;
+}
+
+message FailRequest {
+  int32 code = 1;
+  string message = 2;
+}
+
+message SlowRequest {
+  int64 delay_ms = 1;
+}
