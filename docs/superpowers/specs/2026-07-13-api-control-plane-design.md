@@ -205,3 +205,32 @@ challenge in a Web Worker; difficulty scales with batch size and server load) ·
 live global counter via SSE (`the-button.counter`, anonymous) · personal + global
 troll achievements · React + Vite SPA in `web/apps/the-button` · anonymous reads,
 authenticated clicks (Zitadel login, SPA + PKCE).
+
+## Amendments (implementation)
+
+- Registration files live in **iac** (`apps/api-control-plane/registrations/`),
+  not this repo — iac is the GitOps source of truth and the ConfigMap is
+  generated there (stable name, hot-reload in place).
+- demo-service ships as a second binary in this repo/image (`cmd/demo-service`,
+  `command: ["/demo-service"]`) rather than its own repo — it is a permanent
+  smoke tenant, not a product.
+- demo.proto gained `WhoAmI` (claims-forwarding check) and `AdminPing`
+  (role-rule target); protos tag `gen/go/v0.1.0`.
+- Push gateway metrics listener is `:9091`, never exposed via the Ingress —
+  `/metrics` on the public listener does not exist (the reserved-prefix rule
+  still blocks registrations from claiming it).
+- The GHCR image package is private (repo owner's choice, not a security
+  requirement of this design) — the cluster pulls it via a sealed
+  `registry-creds` `dockerconfigjson` pull secret in both the
+  `api-control-plane` and `demo-service` namespaces, replicated from
+  `argocd/ghcr-creds` (same pattern as `apps/showcase`).
+- `config.Store`'s fsnotify watcher is armed synchronously inside `NewStore`
+  (not lazily on first `Watch` call) and torn down in `Store.Close()` — this
+  closes a window where filesystem events between construction and watching
+  would otherwise be lost. JWKS initialization uses
+  `keyfunc.NewDefaultOverrideCtx` with `NoErrorReturnFirstHTTPReq: false`
+  (explicitly overriding the library default of `true`): the default swallows
+  the first-fetch error and would report the verifier ready with an empty key
+  set, so authenticated routes would incorrectly serve traffic (as
+  always-401) instead of the intended not-ready/retry state when Zitadel's
+  JWKS endpoint is unreachable at startup.
