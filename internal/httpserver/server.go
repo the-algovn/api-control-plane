@@ -184,10 +184,22 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return // evicted or broker down
 			}
-			if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			if err := writeSSE(w, data); err != nil {
 				return
 			}
 			flusher.Flush()
 		}
 	}
+}
+
+// writeSSE frames one event; multi-line payloads become one data: field per
+// line (EventSource rejoins them with \n), keeping frames valid.
+func writeSSE(w io.Writer, data []byte) error {
+	for _, line := range strings.Split(string(data), "\n") {
+		if _, err := io.WriteString(w, "data: "+line+"\n"); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
 }

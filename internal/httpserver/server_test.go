@@ -212,16 +212,28 @@ func TestSSE(t *testing.T) {
 			lines <- strings.TrimRight(l, "\n")
 		}
 	}()
-	for {
-		select {
-		case l := <-lines:
-			if l == `data: {"total":1}` {
-				return // success
+	waitFor := func(want string) {
+		t.Helper()
+		for {
+			select {
+			case l := <-lines:
+				if l == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("SSE line %q not received", want)
 			}
-		case <-deadline:
-			t.Fatal("SSE event not received")
 		}
 	}
+	waitFor(`data: {"total":1}`)
+	waitFor("") // blank line terminates the frame
+
+	// multi-line payload: one data: field per line, EventSource rejoins them
+	f.hub.Publish("test.events", []byte("{\n  \"total\": 2\n}"))
+	waitFor("data: {")
+	waitFor(`data:   "total": 2`)
+	waitFor("data: }")
+	waitFor("") // blank line terminates the frame
 }
 
 func TestSSE_RabbitDown(t *testing.T) {
