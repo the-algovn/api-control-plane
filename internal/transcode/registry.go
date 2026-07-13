@@ -25,8 +25,9 @@ var (
 )
 
 type Backend struct {
-	conn    *grpc.ClientConn
-	methods map[string]protoreflect.MethodDescriptor // "pkg.Service/Method"
+	conn     *grpc.ClientConn
+	upstream string
+	methods  map[string]protoreflect.MethodDescriptor // "pkg.Service/Method"
 }
 
 func (b *Backend) Method(svcMethod string) (protoreflect.MethodDescriptor, error) {
@@ -61,9 +62,16 @@ func (r *Registry) Backend(prefix string) (*Backend, error) {
 }
 
 // Reconcile makes the ready-backend set match regs: dials and reflects
-// missing upstreams (failures are logged and retried on the next call),
-// closes backends whose prefix disappeared. Call at startup, on config
-// reload, and on a ticker to pick up late-starting upstreams.
+// missing upstreams (failures are logged and retried on the next call);
+// for a registration whose upstream changed, dials and reflects the new
+// address first and only swaps in the new backend on success (on failure
+// the old, stale-but-working backend keeps serving); for a registration
+// whose upstream is unchanged, re-reflects on the existing connection to
+// pick up new/changed RPCs, keeping the last-known descriptors if the
+// upstream is briefly unreachable; closes backends whose prefix
+// disappeared. Call at startup, on config reload, and on a ticker (~30s)
+// so upstream changes and late-starting/newly-added RPCs surface without
+// a gateway restart.
 // Reconcile calls are serialized internally; concurrent callers queue.
 func (r *Registry) Reconcile(ctx context.Context, regs []*config.Registration) {
 	r.reconcileMu.Lock()
@@ -82,29 +90,73 @@ func (r *Registry) Reconcile(ctx context.Context, regs []*config.Registration) {
 			r.logger.Info("backend removed", "prefix", prefix)
 		}
 	}
-	missing := map[string]*config.Registration{}
-	for prefix, reg := range desired {
-		if _, ok := r.byPrefix[prefix]; !ok {
-			missing[prefix] = reg
-		}
+	existing := make(map[string]*Backend, len(r.byPrefix))
+	for prefix, b := range r.byPrefix {
+		existing[prefix] = b
 	}
 	r.mu.Unlock()
 
-	for prefix, reg := range missing {
-		b, err := r.connect(ctx, reg.Upstream)
+	for prefix, reg := range desired {
+		b, ok := existing[prefix]
+
+		if !ok {
+			nb, err := r.dialAndReflect(ctx, reg.Upstream)
+			if err != nil {
+				r.logger.Warn("backend not ready; will retry on next reconcile",
+					"prefix", prefix, "upstream", reg.Upstream, "err", err)
+				continue
+			}
+			r.mu.Lock()
+			r.byPrefix[prefix] = nb
+			r.mu.Unlock()
+			r.logger.Info("backend ready", "prefix", prefix, "methods", len(nb.methods))
+			continue
+		}
+
+		if b.upstream != reg.Upstream {
+			nb, err := r.dialAndReflect(ctx, reg.Upstream)
+			if err != nil {
+				r.logger.Warn("new upstream unreachable; keeping old backend",
+					"prefix", prefix, "old_upstream", b.upstream, "new_upstream", reg.Upstream, "err", err)
+				continue
+			}
+			r.mu.Lock()
+			r.byPrefix[prefix] = nb
+			r.mu.Unlock()
+			_ = b.conn.Close()
+			r.logger.Info("backend upstream changed", "prefix", prefix, "upstream", reg.Upstream, "methods", len(nb.methods))
+			continue
+		}
+
+		methods, err := r.reflect(ctx, b.conn)
 		if err != nil {
-			r.logger.Warn("backend not ready; will retry on next reconcile",
+			r.logger.Debug("reflect refresh failed; keeping last-known descriptors",
 				"prefix", prefix, "upstream", reg.Upstream, "err", err)
 			continue
 		}
+		nb := &Backend{conn: b.conn, upstream: b.upstream, methods: methods}
 		r.mu.Lock()
-		r.byPrefix[prefix] = b
+		r.byPrefix[prefix] = nb
 		r.mu.Unlock()
-		r.logger.Info("backend ready", "prefix", prefix, "methods", len(b.methods))
 	}
 }
 
-func (r *Registry) connect(ctx context.Context, upstream string) (*Backend, error) {
+// dialAndReflect dials upstream and fetches its method descriptors via
+// reflection, closing the connection if reflection fails.
+func (r *Registry) dialAndReflect(ctx context.Context, upstream string) (*Backend, error) {
+	conn, err := r.dial(upstream)
+	if err != nil {
+		return nil, err
+	}
+	methods, err := r.reflect(ctx, conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &Backend{conn: conn, upstream: upstream, methods: methods}, nil
+}
+
+func (r *Registry) dial(upstream string) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(upstream,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
@@ -112,6 +164,11 @@ func (r *Registry) connect(ctx context.Context, upstream string) (*Backend, erro
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
+	return conn, nil
+}
+
+// reflect fetches unary method descriptors from conn via server reflection.
+func (r *Registry) reflect(ctx context.Context, conn *grpc.ClientConn) (map[string]protoreflect.MethodDescriptor, error) {
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	rc := grpcreflect.NewClientAuto(rctx, conn)
@@ -119,7 +176,6 @@ func (r *Registry) connect(ctx context.Context, upstream string) (*Backend, erro
 
 	svcs, err := rc.ListServices()
 	if err != nil {
-		_ = conn.Close()
 		return nil, fmt.Errorf("reflection ListServices: %w", err)
 	}
 	methods := map[string]protoreflect.MethodDescriptor{}
@@ -129,7 +185,6 @@ func (r *Registry) connect(ctx context.Context, upstream string) (*Backend, erro
 		}
 		sd, err := rc.ResolveService(s)
 		if err != nil {
-			_ = conn.Close()
 			return nil, fmt.Errorf("resolve %s: %w", s, err)
 		}
 		for _, m := range sd.GetMethods() {
@@ -140,10 +195,9 @@ func (r *Registry) connect(ctx context.Context, upstream string) (*Backend, erro
 		}
 	}
 	if len(methods) == 0 {
-		_ = conn.Close()
 		return nil, errors.New("no unary methods exposed via reflection")
 	}
-	return &Backend{conn: conn, methods: methods}, nil
+	return methods, nil
 }
 
 func (r *Registry) Close() {

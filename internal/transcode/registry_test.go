@@ -71,3 +71,35 @@ func TestRegistry_RemovesDroppedPrefixes(t *testing.T) {
 	_, err = r.Backend("/test")
 	require.ErrorIs(t, err, ErrBackendNotReady)
 }
+
+func TestRegistry_UpstreamChangeSwapsBackend(t *testing.T) {
+	addrA := testsvc.StartServer(t)
+	addrB := testsvc.StartServer(t)
+	r := NewRegistry(testLogger())
+	defer r.Close()
+	r.Reconcile(context.Background(), []*config.Registration{reg("/test", addrA)})
+	b1, err := r.Backend("/test")
+	require.NoError(t, err)
+	r.Reconcile(context.Background(), []*config.Registration{reg("/test", addrB)})
+	b2, err := r.Backend("/test")
+	require.NoError(t, err)
+	require.NotSame(t, b1, b2, "upstream change must produce a new backend")
+	_, err = b2.Method("algovn.testsvc.v1.TestService/Echo")
+	require.NoError(t, err)
+}
+
+func TestRegistry_ReflectFailureKeepsLastKnown(t *testing.T) {
+	addr, stop := testsvc.StartStoppableServer(t)
+	r := NewRegistry(testLogger())
+	defer r.Close()
+	r.Reconcile(context.Background(), []*config.Registration{reg("/test", addr)})
+	b, err := r.Backend("/test")
+	require.NoError(t, err)
+	stop() // upstream goes away
+	r.Reconcile(context.Background(), []*config.Registration{reg("/test", addr)})
+	b2, err := r.Backend("/test")
+	require.NoError(t, err, "backend must survive a failed refresh")
+	require.Same(t, b, b2)
+	_, err = b2.Method("algovn.testsvc.v1.TestService/Echo")
+	require.NoError(t, err, "last-known descriptors must remain")
+}

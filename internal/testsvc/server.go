@@ -42,6 +42,19 @@ func (server) Slow(ctx context.Context, req *testsvcv1.SlowRequest) (*testsvcv1.
 // StartServer runs the fixture on a random localhost port and returns its address.
 func StartServer(t *testing.T) string {
 	t.Helper()
+	addr, _ := startServer(t)
+	return addr
+}
+
+// StartStoppableServer is like StartServer but also returns a stop func for
+// tests that need to kill the upstream mid-test.
+func StartStoppableServer(t *testing.T) (addr string, stop func()) {
+	t.Helper()
+	return startServer(t)
+}
+
+func startServer(t *testing.T) (addr string, stop func()) {
+	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -50,6 +63,6 @@ func StartServer(t *testing.T) string {
 	testsvcv1.RegisterTestServiceServer(s, server{})
 	reflection.Register(s)
 	go func() { _ = s.Serve(lis) }()
-	t.Cleanup(s.Stop)
-	return lis.Addr().String()
+	t.Cleanup(s.Stop) // grpc Server.Stop is idempotent
+	return lis.Addr().String(), s.Stop
 }
