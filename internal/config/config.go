@@ -72,6 +72,13 @@ func (r *Registration) RouteRule(method string) (string, time.Duration) {
 	return r.DefaultRule, DefaultDeadline
 }
 
+// HasRoute reports whether method is explicitly listed in Routes.
+// Used to keep metric labels bounded by configuration.
+func (r *Registration) HasRoute(method string) bool {
+	_, ok := r.routeIdx[method]
+	return ok
+}
+
 func ValidRule(rule string) bool {
 	return rule == "anonymous" || rule == "authenticated" || roleRe.MatchString(rule)
 }

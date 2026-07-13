@@ -54,6 +54,9 @@ func TestLoadDir_Valid(t *testing.T) {
 	require.Equal(t, "authenticated", rule)
 	require.Equal(t, DefaultDeadline, deadline)
 
+	require.True(t, reg.HasRoute("algovn.demo.v1.DemoService/Ping"))
+	require.False(t, reg.HasRoute("algovn.demo.v1.DemoService/Other"))
+
 	cr, ok := snap.ChannelRule("demo.ping")
 	require.True(t, ok)
 	require.Equal(t, "anonymous", cr)
