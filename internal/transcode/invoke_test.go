@@ -80,14 +80,17 @@ func TestInvoke_UnknownMethod(t *testing.T) {
 
 func TestHTTPStatus(t *testing.T) {
 	cases := map[codes.Code]int{
-		codes.NotFound:         404,
-		codes.PermissionDenied: 403,
-		codes.InvalidArgument:  400,
-		codes.Unavailable:      502,
-		codes.DeadlineExceeded: 504,
-		codes.Unauthenticated:  401,
-		codes.Internal:         500,
-		codes.Unknown:          500,
+		codes.NotFound:           404,
+		codes.PermissionDenied:   403,
+		codes.InvalidArgument:    400,
+		codes.FailedPrecondition: 400,
+		codes.AlreadyExists:      409,
+		codes.ResourceExhausted:  429,
+		codes.Unavailable:        502,
+		codes.DeadlineExceeded:   504,
+		codes.Unauthenticated:    401,
+		codes.Internal:           500,
+		codes.Unknown:            500,
 	}
 	for code, want := range cases {
 		require.Equal(t, want, HTTPStatus(code), code.String())

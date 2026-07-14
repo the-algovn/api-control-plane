@@ -54,6 +54,12 @@ func HTTPStatus(c codes.Code) int {
 		return 403
 	case codes.NotFound:
 		return 404
+	case codes.FailedPrecondition:
+		return 400
+	case codes.AlreadyExists:
+		return 409
+	case codes.ResourceExhausted:
+		return 429
 	case codes.Unavailable:
 		return 502
 	case codes.DeadlineExceeded:
