@@ -1,4 +1,4 @@
-// api-control-plane: the api.algovn.com gateway. See docs/superpowers/specs.
+// api-control-plane: the api.algovn.com gateway. See the-algovn/specs ARCHITECTURE.md.
 package main
 
 import (
