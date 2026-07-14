@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/metadata"
@@ -34,8 +35,11 @@ type Server struct {
 	Hub             *push.Hub
 	RabbitConnected func() bool
 	CORSOrigins     []string
+	SSEMaxConns     int // global cap on concurrent SSE connections; 0 = unlimited
 	Logger          *slog.Logger
 	Metrics         *observability.Metrics
+
+	sseConns atomic.Int64
 }
 
 func (s *Server) Handler() http.Handler {
@@ -153,6 +157,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if s.RabbitConnected == nil || !s.RabbitConnected() {
 		writeError(w, 503, "unavailable", "event stream temporarily unavailable")
 		return
+	}
+	if s.SSEMaxConns > 0 {
+		if n := s.sseConns.Add(1); n > int64(s.SSEMaxConns) {
+			s.sseConns.Add(-1)
+			writeError(w, 503, "unavailable", "SSE connection limit reached, retry later")
+			return
+		}
+		defer s.sseConns.Add(-1)
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {

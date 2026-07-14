@@ -32,6 +32,7 @@ type fixture struct {
 	jwks    *authtest.JWKS
 	hub     *push.Hub
 	metrics *observability.Metrics
+	server  *Server
 }
 
 func newFixture(t *testing.T, rabbitConnected bool) *fixture {
@@ -83,7 +84,7 @@ channels:
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
-	return &fixture{srv: srv, jwks: jwks, hub: hub, metrics: metrics}
+	return &fixture{srv: srv, jwks: jwks, hub: hub, metrics: metrics, server: s}
 }
 
 func (f *fixture) token(t *testing.T, roles ...string) string {
@@ -249,6 +250,22 @@ func TestSSE_RabbitDown(t *testing.T) {
 	f := newFixture(t, false)
 	resp := do(t, "GET", f.srv.URL+"/events/test.events", "", "")
 	require.Equal(t, 503, resp.StatusCode)
+}
+
+func TestSSECap(t *testing.T) {
+	f := newFixture(t, true)
+	f.server.SSEMaxConns = 2
+	open := func() *http.Response {
+		req, err := http.NewRequest("GET", f.srv.URL+"/events/test.events", nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { resp.Body.Close() })
+		return resp
+	}
+	require.Equal(t, 200, open().StatusCode) // held open by t.Cleanup
+	require.Equal(t, 200, open().StatusCode)
+	require.Equal(t, 503, open().StatusCode) // third connection over the cap
 }
 
 func TestMetricsCardinalityBounded(t *testing.T) {

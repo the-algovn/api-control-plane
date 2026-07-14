@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +46,11 @@ func main() {
 	listenAddr := env("LISTEN_ADDR", ":8080")
 	metricsAddr := env("METRICS_ADDR", ":9091")
 	corsOrigins := strings.Split(env("CORS_ORIGINS", "https://*.algovn.com"), ",")
+	sseMaxConns, err := strconv.Atoi(env("SSE_MAX_CONNS", "15000"))
+	if err != nil || sseMaxConns < 1 {
+		logger.Error("SSE_MAX_CONNS must be a positive integer", "value", env("SSE_MAX_CONNS", "15000"))
+		os.Exit(1)
+	}
 	amqpURL := os.Getenv("AMQP_URL")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -93,7 +99,8 @@ func main() {
 	srv := &httpserver.Server{
 		Store: store, Verifier: verifier, Backends: backends, Hub: hub,
 		RabbitConnected: rabbitConnected, CORSOrigins: corsOrigins,
-		Logger: logger, Metrics: metrics,
+		SSEMaxConns: sseMaxConns,
+		Logger:      logger, Metrics: metrics,
 	}
 	api := &http.Server{Addr: listenAddr, Handler: srv.Handler()}
 
