@@ -45,7 +45,7 @@ func main() {
 	jwksURL := env("JWKS_URL", strings.TrimSuffix(issuer, "/")+"/oauth/v2/keys")
 	listenAddr := env("LISTEN_ADDR", ":8080")
 	metricsAddr := env("METRICS_ADDR", ":9091")
-	corsOrigins := strings.Split(env("CORS_ORIGINS", "https://*.algovn.com"), ",")
+	corsOrigins := strings.Split(env("CORS_ORIGINS", "https://*.algovn.com,https://algovn.com"), ",")
 	sseMaxConns, err := strconv.Atoi(env("SSE_MAX_CONNS", "15000"))
 	if err != nil || sseMaxConns < 1 {
 		logger.Error("SSE_MAX_CONNS must be a positive integer", "value", env("SSE_MAX_CONNS", "15000"))

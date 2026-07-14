@@ -78,7 +78,7 @@ channels:
 	s := &Server{
 		Store: store, Verifier: verifier, Backends: backends, Hub: hub,
 		RabbitConnected: func() bool { return rabbitConnected },
-		CORSOrigins:     []string{"https://*.algovn.com"},
+		CORSOrigins:     []string{"https://*.algovn.com", "https://algovn.com"},
 		Logger:          logger,
 		Metrics:         metrics,
 	}
@@ -178,6 +178,18 @@ func TestCORS(t *testing.T) {
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	require.Empty(t, resp2.Header.Get("Access-Control-Allow-Origin"))
+
+	// apex origin (the-button SPA at https://algovn.com) needs an exact entry:
+	// the *.algovn.com wildcard deliberately does not match the apex.
+	req3, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Echo", nil)
+	req3.Header.Set("Origin", "https://algovn.com")
+	req3.Header.Set("Access-Control-Request-Method", "POST")
+	resp3, err := http.DefaultClient.Do(req3)
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	require.Equal(t, 204, resp3.StatusCode)
+	require.Equal(t, "https://algovn.com", resp3.Header.Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "Retry-After", resp3.Header.Get("Access-Control-Expose-Headers"))
 }
 
 func TestHealthz(t *testing.T) {
