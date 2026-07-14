@@ -170,6 +170,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	// Base reconnect delay for EventSource; the SPA layers full jitter (0-5s)
+	// on top so a rolling deploy doesn't cause a reconnect stampede.
+	_, _ = io.WriteString(w, "retry: 3000\n\n")
 	flusher.Flush()
 
 	heartbeat := time.NewTicker(sseHeartbeat)

@@ -233,6 +233,7 @@ func TestSSE(t *testing.T) {
 			}
 		}
 	}
+	waitFor("retry: 3000") // reconnect hint precedes any event
 	waitFor(`data: {"total":1}`)
 	waitFor("") // blank line terminates the frame
 
