@@ -119,6 +119,9 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		st := status.Convert(err)
 		httpCode := transcode.HTTPStatus(st.Code())
 		s.count(route, httpCode)
+		if httpCode == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "2") // PoW token stays valid; client backs off
+		}
 		writeError(w, httpCode, st.Code().String(), st.Message())
 		return
 	}

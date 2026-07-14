@@ -150,6 +150,14 @@ func TestTranscodeRoutes(t *testing.T) {
 	require.Equal(t, 404, resp.StatusCode)
 }
 
+func TestRetryAfterOn429(t *testing.T) {
+	f := newFixture(t, true)
+	// testsvc Fail returns the given gRPC code: 8 = ResourceExhausted -> 429.
+	resp := do(t, "POST", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Fail", f.token(t), `{"code":8,"message":"slow down"}`)
+	require.Equal(t, 429, resp.StatusCode)
+	require.Equal(t, "2", resp.Header.Get("Retry-After"))
+}
+
 func TestCORS(t *testing.T) {
 	f := newFixture(t, true)
 	req, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Echo", nil)
