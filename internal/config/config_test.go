@@ -20,8 +20,12 @@ upstream: dns:///demo-service.demo-service.svc.cluster.local:9090
 defaultRule: authenticated
 routes:
   - method: algovn.demo.v1.DemoService/Ping
+    verb: GET
+    path: /ping
     rule: anonymous
   - method: algovn.demo.v1.DemoService/AdminPing
+    verb: POST
+    path: /admin/ping
     rule: role:admin
     deadline: 3s
 channels:
@@ -36,34 +40,33 @@ func TestLoadDir_Valid(t *testing.T) {
 	snap, err := LoadDir(dir)
 	require.NoError(t, err)
 
-	reg, ok := snap.Match("/demo/algovn.demo.v1.DemoService/Ping")
+	m, ok := snap.Route("GET", "/demo/ping")
 	require.True(t, ok)
-	require.Equal(t, "/demo", reg.Prefix)
-	require.Equal(t, "dns:///demo-service.demo-service.svc.cluster.local:9090", reg.Upstream)
+	require.Equal(t, "/demo", m.Prefix)
+	require.Equal(t, "algovn.demo.v1.DemoService/Ping", m.GRPCMethod)
+	require.Equal(t, "anonymous", m.Rule)
+	require.Equal(t, DefaultDeadline, m.Deadline)
+	require.Equal(t, "/demo/ping", m.Metric)
 
-	rule, deadline := reg.RouteRule("algovn.demo.v1.DemoService/Ping")
-	require.Equal(t, "anonymous", rule)
-	require.Equal(t, DefaultDeadline, deadline)
+	m, ok = snap.Route("POST", "/demo/admin/ping")
+	require.True(t, ok)
+	require.Equal(t, "role:admin", m.Rule)
+	require.Equal(t, 3*time.Second, m.Deadline)
 
-	rule, deadline = reg.RouteRule("algovn.demo.v1.DemoService/AdminPing")
-	require.Equal(t, "role:admin", rule)
-	require.Equal(t, 3*time.Second, deadline)
+	// wrong verb on a known path is not a match, but the path is known
+	_, ok = snap.Route("POST", "/demo/ping")
+	require.False(t, ok)
+	require.Equal(t, []string{"GET"}, snap.PathVerbs("/demo/ping"))
 
-	// unlisted method falls back to defaultRule
-	rule, deadline = reg.RouteRule("algovn.demo.v1.DemoService/Other")
-	require.Equal(t, "authenticated", rule)
-	require.Equal(t, DefaultDeadline, deadline)
-
-	require.True(t, reg.HasRoute("algovn.demo.v1.DemoService/Ping"))
-	require.False(t, reg.HasRoute("algovn.demo.v1.DemoService/Other"))
+	// unknown path: no match, no verbs
+	_, ok = snap.Route("GET", "/demo/nope")
+	require.False(t, ok)
+	require.Empty(t, snap.PathVerbs("/demo/nope"))
 
 	cr, ok := snap.ChannelRule("demo.ping")
 	require.True(t, ok)
 	require.Equal(t, "anonymous", cr)
 	_, ok = snap.ChannelRule("nope.nope")
-	require.False(t, ok)
-
-	_, ok = snap.Match("/unknown/x/y")
 	require.False(t, ok)
 }
 
@@ -72,22 +75,28 @@ func TestLoadDir_UpstreamSchemeNormalized(t *testing.T) {
 	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: svc.ns.svc:9090\n")
 	snap, err := LoadDir(dir)
 	require.NoError(t, err)
-	reg, _ := snap.Match("/a/x/y")
-	require.Equal(t, "dns:///svc.ns.svc:9090", reg.Upstream)
+	regs := snap.Registrations()
+	require.Len(t, regs, 1)
+	require.Equal(t, "dns:///svc.ns.svc:9090", regs[0].Upstream)
 	// empty defaultRule defaults to authenticated
-	rule, _ := reg.RouteRule("x/y")
-	require.Equal(t, "authenticated", rule)
+	require.Equal(t, "authenticated", regs[0].DefaultRule)
 }
 
 func TestLoadDir_Invalid(t *testing.T) {
 	cases := map[string]string{
-		"reserved prefix":   "prefix: /events\nupstream: s:9090\n",
-		"bad prefix":        "prefix: /Two/Seg\nupstream: s:9090\n",
-		"missing upstream":  "prefix: /a\n",
-		"bad rule":          "prefix: /a\nupstream: s:9090\ndefaultRule: sometimes\n",
-		"bad role rule":     "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, rule: 'role:'}]\n",
-		"bad channel name":  "prefix: /a\nupstream: s:9090\nchannels: [{name: nodot, rule: anonymous}]\n",
-		"bad yaml":          "prefix: [unclosed\n",
+		"reserved prefix":  "prefix: /events\nupstream: s:9090\n",
+		"bad prefix":       "prefix: /Two/Seg\nupstream: s:9090\n",
+		"missing upstream": "prefix: /a\n",
+		"bad rule":         "prefix: /a\nupstream: s:9090\ndefaultRule: sometimes\n",
+		"bad role rule":    "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: GET, path: /x, rule: 'role:'}]\n",
+		"bad channel name": "prefix: /a\nupstream: s:9090\nchannels: [{name: nodot, rule: anonymous}]\n",
+		"bad yaml":         "prefix: [unclosed\n",
+		"missing verb":     "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, path: /x, rule: anonymous}]\n",
+		"bad verb":         "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: FETCH, path: /x, rule: anonymous}]\n",
+		"missing path":     "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: GET, rule: anonymous}]\n",
+		"bad path":         "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: GET, path: /Bad_Seg, rule: anonymous}]\n",
+		"trailing slash":   "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: GET, path: /x/, rule: anonymous}]\n",
+		"dup verb+path":    "prefix: /a\nupstream: s:9090\nroutes: [{method: p.S/M, verb: GET, path: /x, rule: anonymous}, {method: p.S/N, verb: GET, path: /x, rule: anonymous}]\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -97,6 +106,20 @@ func TestLoadDir_Invalid(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestLoadDir_VerbNormalizedAndSameMethodTwoPaths(t *testing.T) {
+	dir := t.TempDir()
+	// lowercase verb is normalized; one gRPC method may back two distinct routes
+	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: s:9090\nroutes:\n"+
+		"  - {method: p.S/Get, verb: get, path: /thing, rule: anonymous}\n"+
+		"  - {method: p.S/Get, verb: get, path: /thing-alias, rule: anonymous}\n")
+	snap, err := LoadDir(dir)
+	require.NoError(t, err)
+	_, ok := snap.Route("GET", "/a/thing")
+	require.True(t, ok)
+	_, ok = snap.Route("GET", "/a/thing-alias")
+	require.True(t, ok)
 }
 
 func TestLoadDir_CrossFileCollisions(t *testing.T) {

@@ -12,6 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func hasPrefix(snap *Snapshot, prefix string) bool {
+	for _, r := range snap.Registrations() {
+		if r.Prefix == prefix {
+			return true
+		}
+	}
+	return false
+}
+
 func TestStore_HotReload(t *testing.T) {
 	dir := t.TempDir()
 	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: s1:9090\n")
@@ -25,21 +34,18 @@ func TestStore_HotReload(t *testing.T) {
 	defer cancel()
 	go st.Watch(ctx, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	_, ok := st.Get().Match("/b/x/y")
-	require.False(t, ok)
+	require.False(t, hasPrefix(st.Get(), "/b"))
 
 	// add a second registration -> picked up
 	writeReg(t, dir, "b.yaml", "prefix: /b\nupstream: s2:9090\n")
 	require.Eventually(t, func() bool {
-		_, ok := st.Get().Match("/b/x/y")
-		return ok
+		return hasPrefix(st.Get(), "/b")
 	}, 5*time.Second, 50*time.Millisecond)
 
 	// break a file -> snapshot stays, error callback fires
 	writeReg(t, dir, "b.yaml", "prefix: [broken\n")
 	require.Eventually(t, func() bool { return reloadErrs.Load() >= 1 }, 5*time.Second, 50*time.Millisecond)
-	_, ok = st.Get().Match("/b/x/y")
-	require.True(t, ok, "last good snapshot must survive a bad reload")
+	require.True(t, hasPrefix(st.Get(), "/b"), "last good snapshot must survive a bad reload")
 }
 
 func TestNewStore_FailsOnInvalidDir(t *testing.T) {

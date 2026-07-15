@@ -20,6 +20,8 @@ var (
 	prefixRe         = regexp.MustCompile(`^/[a-z0-9-]+$`)
 	channelRe        = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`)
 	roleRe           = regexp.MustCompile(`^role:[a-z0-9_-]+$`)
+	pathRe           = regexp.MustCompile(`^(/[a-z0-9-]+)+$`)
+	validVerbs       = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 )
 
 // Duration parses YAML strings like "3s" via time.ParseDuration.
@@ -40,6 +42,8 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 type Route struct {
 	Method   string   `yaml:"method"`
+	Verb     string   `yaml:"verb"`
+	Path     string   `yaml:"path"`
 	Rule     string   `yaml:"rule"`
 	Deadline Duration `yaml:"deadline"`
 }
@@ -55,46 +59,43 @@ type Registration struct {
 	DefaultRule string    `yaml:"defaultRule"`
 	Routes      []Route   `yaml:"routes"`
 	Channels    []Channel `yaml:"channels"`
-
-	routeIdx map[string]Route
-}
-
-// RouteRule returns the auth rule and upstream deadline for a
-// "pkg.Service/Method" string, falling back to DefaultRule.
-func (r *Registration) RouteRule(method string) (string, time.Duration) {
-	if rt, ok := r.routeIdx[method]; ok {
-		d := time.Duration(rt.Deadline)
-		if d == 0 {
-			d = DefaultDeadline
-		}
-		return rt.Rule, d
-	}
-	return r.DefaultRule, DefaultDeadline
-}
-
-// HasRoute reports whether method is explicitly listed in Routes.
-// Used to keep metric labels bounded by configuration.
-func (r *Registration) HasRoute(method string) bool {
-	_, ok := r.routeIdx[method]
-	return ok
 }
 
 func ValidRule(rule string) bool {
 	return rule == "anonymous" || rule == "authenticated" || roleRe.MatchString(rule)
 }
 
-type Snapshot struct {
-	regs     map[string]*Registration // key: prefix
-	channels map[string]string        // channel name -> rule
+type routeKey struct {
+	verb string
+	path string // full path: prefix + Route.Path
 }
 
-// Match resolves the registration owning a request path by its first segment.
-func (s *Snapshot) Match(path string) (*Registration, bool) {
-	rest := strings.TrimPrefix(path, "/")
-	seg, _, _ := strings.Cut(rest, "/")
-	reg, ok := s.regs["/"+seg]
-	return reg, ok
+// RouteMatch is a resolved public route: everything the handler needs to
+// authorize and transcode one request, with no further config lookups.
+type RouteMatch struct {
+	Prefix     string        // owning registration prefix (for backend lookup)
+	GRPCMethod string        // "pkg.Service/Method"
+	Rule       string        // auth rule
+	Deadline   time.Duration // upstream deadline (DefaultDeadline if unset)
+	Metric     string        // bounded metric label (the full path)
 }
+
+type Snapshot struct {
+	regs      map[string]*Registration // key: prefix
+	channels  map[string]string        // channel name -> rule
+	routes    map[routeKey]RouteMatch  // key: {verb, full path}
+	pathVerbs map[string][]string      // full path -> sorted verbs (for 405/Allow)
+}
+
+// Route resolves an exact (HTTP method, full request path) to its route.
+func (s *Snapshot) Route(verb, fullPath string) (RouteMatch, bool) {
+	m, ok := s.routes[routeKey{verb: verb, path: fullPath}]
+	return m, ok
+}
+
+// PathVerbs returns the verbs registered for a full path, sorted. Empty when
+// the path is unknown — the handler uses this to pick 404 vs 405.
+func (s *Snapshot) PathVerbs(fullPath string) []string { return s.pathVerbs[fullPath] }
 
 func (s *Snapshot) ChannelRule(name string) (string, bool) {
 	rule, ok := s.channels[name]
@@ -117,7 +118,12 @@ func LoadDir(dir string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	snap := &Snapshot{regs: map[string]*Registration{}, channels: map[string]string{}}
+	snap := &Snapshot{
+		regs:      map[string]*Registration{},
+		channels:  map[string]string{},
+		routes:    map[routeKey]RouteMatch{},
+		pathVerbs: map[string][]string{},
+	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
@@ -139,12 +145,34 @@ func LoadDir(dir string) (*Snapshot, error) {
 			return nil, fmt.Errorf("%s: duplicate prefix %s", e.Name(), reg.Prefix)
 		}
 		snap.regs[reg.Prefix] = &reg
+		for _, rt := range reg.Routes {
+			full := reg.Prefix + rt.Path
+			key := routeKey{verb: rt.Verb, path: full}
+			if _, dup := snap.routes[key]; dup {
+				return nil, fmt.Errorf("%s: duplicate route %s %s", e.Name(), rt.Verb, full)
+			}
+			d := time.Duration(rt.Deadline)
+			if d == 0 {
+				d = DefaultDeadline
+			}
+			snap.routes[key] = RouteMatch{
+				Prefix:     reg.Prefix,
+				GRPCMethod: rt.Method,
+				Rule:       rt.Rule,
+				Deadline:   d,
+				Metric:     full,
+			}
+			snap.pathVerbs[full] = append(snap.pathVerbs[full], rt.Verb)
+		}
 		for _, ch := range reg.Channels {
 			if _, dup := snap.channels[ch.Name]; dup {
 				return nil, fmt.Errorf("%s: duplicate channel %s", e.Name(), ch.Name)
 			}
 			snap.channels[ch.Name] = ch.Rule
 		}
+	}
+	for p := range snap.pathVerbs {
+		sort.Strings(snap.pathVerbs[p])
 	}
 	return snap, nil
 }
@@ -168,18 +196,21 @@ func validate(r *Registration) error {
 	if !ValidRule(r.DefaultRule) {
 		return fmt.Errorf("invalid defaultRule %q", r.DefaultRule)
 	}
-	r.routeIdx = make(map[string]Route, len(r.Routes))
-	for _, rt := range r.Routes {
+	for i := range r.Routes {
+		rt := &r.Routes[i]
 		if rt.Method == "" || !strings.Contains(rt.Method, "/") {
 			return fmt.Errorf("route method %q must be pkg.Service/Method", rt.Method)
+		}
+		rt.Verb = strings.ToUpper(rt.Verb)
+		if !validVerbs[rt.Verb] {
+			return fmt.Errorf("route %s: verb %q must be one of GET POST PUT PATCH DELETE", rt.Method, rt.Verb)
+		}
+		if !pathRe.MatchString(rt.Path) {
+			return fmt.Errorf("route %s: path %q must match %s", rt.Method, rt.Path, pathRe)
 		}
 		if !ValidRule(rt.Rule) {
 			return fmt.Errorf("route %s: invalid rule %q", rt.Method, rt.Rule)
 		}
-		if _, dup := r.routeIdx[rt.Method]; dup {
-			return fmt.Errorf("duplicate route %s", rt.Method)
-		}
-		r.routeIdx[rt.Method] = rt
 	}
 	for _, ch := range r.Channels {
 		if !channelRe.MatchString(ch.Name) {
