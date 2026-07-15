@@ -55,40 +55,26 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	snap := s.Store.Get()
-	reg, ok := snap.Match(r.URL.Path)
+	entry, ok := snap.Route(r.Method, r.URL.Path)
 	if !ok {
-		writeError(w, 404, "not_found", "unknown API prefix")
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeError(w, 405, "method_not_allowed", "RPC calls are POST")
-		return
-	}
-	// /<prefix>/<pkg.Service>/<Method> -> "pkg.Service/Method"
-	svcMethod := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, reg.Prefix), "/")
-	parts := strings.Split(svcMethod, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		writeError(w, 404, "not_found", "expected /"+strings.TrimPrefix(reg.Prefix, "/")+"/<pkg.Service>/<Method>")
+		if verbs := snap.PathVerbs(r.URL.Path); len(verbs) > 0 {
+			w.Header().Set("Allow", strings.Join(verbs, ", "))
+			writeError(w, 405, "method_not_allowed", "method not allowed for this path")
+			return
+		}
+		writeError(w, 404, "not_found", "unknown path")
 		return
 	}
 
-	// metric label stays bounded by configuration: unlisted methods
-	// (including attacker-supplied garbage) share one bucket per prefix
-	route := reg.Prefix + "/unmatched"
-	if reg.HasRoute(svcMethod) {
-		route = reg.Prefix + "/" + svcMethod
-	}
-
-	rule, deadline := reg.RouteRule(svcMethod)
-	if _, aerr := auth.Authorize(s.Verifier, rule, r.Header.Get("Authorization")); aerr != nil {
-		s.count(route, aerr.Status)
+	if _, aerr := auth.Authorize(s.Verifier, entry.Rule, r.Header.Get("Authorization")); aerr != nil {
+		s.count(entry.Metric, aerr.Status)
 		writeError(w, aerr.Status, aerr.Code, aerr.Message)
 		return
 	}
 
-	backend, err := s.Backends.Backend(reg.Prefix)
+	backend, err := s.Backends.Backend(entry.Prefix)
 	if err != nil {
-		s.count(route, 502)
+		s.count(entry.Metric, 502)
 		writeError(w, 502, "unavailable", "upstream descriptors not loaded")
 		return
 	}
@@ -112,17 +98,22 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	respJSON, err := backend.Invoke(r.Context(), svcMethod, body, md, deadline)
-	s.Metrics.Duration.WithLabelValues(route).Observe(time.Since(start).Seconds())
+	respJSON, err := backend.Invoke(r.Context(), entry.GRPCMethod, body, md, entry.Deadline)
+	s.Metrics.Duration.WithLabelValues(entry.Metric).Observe(time.Since(start).Seconds())
 	if err != nil {
 		if errors.Is(err, transcode.ErrMethodNotFound) {
-			s.count(route, 404)
-			writeError(w, 404, "not_found", "unknown method "+svcMethod)
+			// A registered path points at a method the upstream doesn't expose
+			// (config/deploy mismatch, or reflection briefly stale) — server-side,
+			// not a client 404.
+			s.count(entry.Metric, 502)
+			s.Logger.Warn("registered route targets a method the upstream does not expose",
+				"path", r.URL.Path, "method", entry.GRPCMethod)
+			writeError(w, 502, "unavailable", "upstream does not expose the requested method")
 			return
 		}
 		st := status.Convert(err)
 		httpCode := transcode.HTTPStatus(st.Code())
-		s.count(route, httpCode)
+		s.count(entry.Metric, httpCode)
 		if httpCode == http.StatusTooManyRequests {
 			w.Header().Set("Retry-After", "2") // PoW token stays valid; client backs off
 		}
@@ -130,11 +121,11 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(respJSON) > 4<<20 {
-		s.count(route, 500)
+		s.count(entry.Metric, 500)
 		writeError(w, 500, "internal", "response exceeds 4MiB")
 		return
 	}
-	s.count(route, 200)
+	s.count(entry.Metric, 200)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(respJSON)
 }

@@ -47,10 +47,16 @@ upstream: ` + upstream + `
 defaultRule: authenticated
 routes:
   - method: algovn.testsvc.v1.TestService/Echo
+    verb: POST
+    path: /echo
     rule: anonymous
   - method: algovn.testsvc.v1.TestService/Fail
+    verb: POST
+    path: /fail
     rule: authenticated
   - method: algovn.testsvc.v1.TestService/Slow
+    verb: POST
+    path: /slow
     rule: role:admin
 channels:
   - name: test.events
@@ -118,50 +124,49 @@ func TestTranscodeRoutes(t *testing.T) {
 	base := f.srv.URL
 
 	// anonymous route, no token
-	resp := do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Echo", "", `{"message":"hi"}`)
+	resp := do(t, "POST", base+"/test/echo", "", `{"message":"hi"}`)
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 
 	// authenticated route: 401 then 200
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Fail", "", `{"code":0}`)
+	resp = do(t, "POST", base+"/test/fail", "", `{"code":0}`)
 	require.Equal(t, 401, resp.StatusCode)
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Fail", f.token(t), `{"code":0,"message":"x"}`)
+	resp = do(t, "POST", base+"/test/fail", f.token(t), `{"code":0,"message":"x"}`)
 	require.Equal(t, 200, resp.StatusCode) // codes.OK => success
 
 	// upstream error mapping: NotFound(5) -> 404 with error body
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Fail", f.token(t), `{"code":5,"message":"gone"}`)
+	resp = do(t, "POST", base+"/test/fail", f.token(t), `{"code":5,"message":"gone"}`)
 	require.Equal(t, 404, resp.StatusCode)
 
 	// role route: 403 without role, 200 with
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Slow", f.token(t), `{"delayMs":"1"}`)
+	resp = do(t, "POST", base+"/test/slow", f.token(t), `{"delayMs":"1"}`)
 	require.Equal(t, 403, resp.StatusCode)
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Slow", f.token(t, "admin"), `{"delayMs":"1"}`)
+	resp = do(t, "POST", base+"/test/slow", f.token(t, "admin"), `{"delayMs":"1"}`)
 	require.Equal(t, 200, resp.StatusCode)
 
-	// unknown prefix -> 404; unknown method -> 404; GET on rpc -> 405
-	resp = do(t, "POST", base+"/ghost/x.Y/Z", "", `{}`)
+	// unknown prefix -> 404; unregistered path -> 404
+	resp = do(t, "POST", base+"/ghost/whatever", "", `{}`)
 	require.Equal(t, 404, resp.StatusCode)
-	resp = do(t, "POST", base+"/test/algovn.testsvc.v1.TestService/Nope", f.token(t), `{}`)
+	resp = do(t, "POST", base+"/test/nope", f.token(t), `{}`)
 	require.Equal(t, 404, resp.StatusCode)
-	resp = do(t, "GET", base+"/test/algovn.testsvc.v1.TestService/Echo", "", "")
-	require.Equal(t, 405, resp.StatusCode)
 
-	// malformed rpc path (no Service/Method) -> 404
-	resp = do(t, "POST", base+"/test/whatever", "", `{}`)
-	require.Equal(t, 404, resp.StatusCode)
+	// known path, wrong verb -> 405 with Allow header
+	resp = do(t, "GET", base+"/test/echo", "", "")
+	require.Equal(t, 405, resp.StatusCode)
+	require.Equal(t, "POST", resp.Header.Get("Allow"))
 }
 
 func TestRetryAfterOn429(t *testing.T) {
 	f := newFixture(t, true)
 	// testsvc Fail returns the given gRPC code: 8 = ResourceExhausted -> 429.
-	resp := do(t, "POST", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Fail", f.token(t), `{"code":8,"message":"slow down"}`)
+	resp := do(t, "POST", f.srv.URL+"/test/fail", f.token(t), `{"code":8,"message":"slow down"}`)
 	require.Equal(t, 429, resp.StatusCode)
 	require.Equal(t, "2", resp.Header.Get("Retry-After"))
 }
 
 func TestCORS(t *testing.T) {
 	f := newFixture(t, true)
-	req, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Echo", nil)
+	req, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/echo", nil)
 	req.Header.Set("Origin", "https://button.algovn.com")
 	req.Header.Set("Access-Control-Request-Method", "POST")
 	resp, err := http.DefaultClient.Do(req)
@@ -181,7 +186,7 @@ func TestCORS(t *testing.T) {
 
 	// apex origin (the-button SPA at https://algovn.com) needs an exact entry:
 	// the *.algovn.com wildcard deliberately does not match the apex.
-	req3, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Echo", nil)
+	req3, _ := http.NewRequest("OPTIONS", f.srv.URL+"/test/echo", nil)
 	req3.Header.Set("Origin", "https://algovn.com")
 	req3.Header.Set("Access-Control-Request-Method", "POST")
 	resp3, err := http.DefaultClient.Do(req3)
@@ -282,17 +287,17 @@ func TestSSECap(t *testing.T) {
 
 func TestMetricsCardinalityBounded(t *testing.T) {
 	f := newFixture(t, true)
-	for _, m := range []string{"x.Garbage/One", "x.Garbage/Two", "x.Garbage/Three"} {
-		resp := do(t, "POST", f.srv.URL+"/test/"+m, f.token(t), `{}`)
+	for _, p := range []string{"/test/garbage-one", "/test/garbage-two", "/test/garbage-three"} {
+		resp := do(t, "POST", f.srv.URL+p, f.token(t), `{}`)
 		require.Equal(t, 404, resp.StatusCode)
 	}
 	series := testutil.CollectAndCount(f.metrics.Requests)
-	require.Equal(t, 1, series, "garbage methods must share one <prefix>/unmatched series")
+	require.Equal(t, 0, series, "unregistered paths must not create request-metric series")
 }
 
 func TestBodyLimit(t *testing.T) {
 	f := newFixture(t, true)
 	big := `{"message":"` + strings.Repeat("x", 1<<20) + `"}` // > 1 MiB
-	resp := do(t, "POST", f.srv.URL+"/test/algovn.testsvc.v1.TestService/Echo", "", big)
+	resp := do(t, "POST", f.srv.URL+"/test/echo", "", big)
 	require.Equal(t, 413, resp.StatusCode)
 }
