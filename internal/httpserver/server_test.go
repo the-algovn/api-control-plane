@@ -3,6 +3,7 @@ package httpserver
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,14 @@ routes:
     verb: POST
     path: /slow
     rule: role:admin
+  - method: algovn.testsvc.v1.TestService/Echo
+    verb: GET
+    path: /echo-get
+    rule: anonymous
+  - method: algovn.testsvc.v1.TestService/Ghost
+    verb: POST
+    path: /ghost
+    rule: anonymous
 channels:
   - name: test.events
     rule: anonymous
@@ -154,6 +163,26 @@ func TestTranscodeRoutes(t *testing.T) {
 	resp = do(t, "GET", base+"/test/echo", "", "")
 	require.Equal(t, 405, resp.StatusCode)
 	require.Equal(t, "POST", resp.Header.Get("Allow"))
+}
+
+func TestRestEdgeCases(t *testing.T) {
+	f := newFixture(t, true)
+	base := f.srv.URL
+
+	// GET route with empty body (highest-traffic shape, e.g. GET /the-button/counter) -> 200
+	resp := do(t, "GET", base+"/test/echo-get", "", "")
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	// registered route targets a method the upstream doesn't expose -> 502 unavailable
+	resp = do(t, "POST", base+"/test/ghost", "", `{}`)
+	require.Equal(t, 502, resp.StatusCode)
+	var body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "unavailable", body.Code)
 }
 
 func TestRetryAfterOn429(t *testing.T) {
