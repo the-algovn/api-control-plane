@@ -141,7 +141,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_found", "unknown channel")
 		return
 	}
-	if _, aerr := auth.Authorize(s.Verifier, rule, r.Header.Get("Authorization")); aerr != nil {
+	id, aerr := auth.Authorize(s.Verifier, rule, r.Header.Get("Authorization"))
+	if aerr != nil {
 		writeError(w, aerr.Status, aerr.Code, aerr.Message)
 		return
 	}
@@ -178,12 +179,24 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "retry: 3000\n\n")
 	flusher.Flush()
 
+	// Bound an auth-gated stream by the token's expiry: a long-lived SSE
+	// connection must not outlive the credential that opened it. Anonymous
+	// channels stay unbounded (a nil channel blocks forever in the select).
+	var expiry <-chan time.Time
+	if rule != "anonymous" && !id.ExpiresAt.IsZero() {
+		t := time.NewTimer(time.Until(id.ExpiresAt))
+		defer t.Stop()
+		expiry = t.C
+	}
+
 	heartbeat := time.NewTicker(sseHeartbeat)
 	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-expiry:
+			return // token expired; the client reconnects with a fresh one
 		case <-heartbeat.C:
 			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
 				return

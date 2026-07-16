@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -290,6 +291,27 @@ func TestSSE(t *testing.T) {
 	waitFor(`data:   "total": 2`)
 	waitFor("data: }")
 	waitFor("") // blank line terminates the frame
+}
+
+func TestSSE_TokenExpiryBoundsStream(t *testing.T) {
+	f := newFixture(t, true)
+	// Valid at connect (30s verify leeway) but expiring almost immediately.
+	claims := jwt.MapClaims{"iss": issuer, "sub": "user-1", "exp": time.Now().Add(300 * time.Millisecond).Unix()}
+	req, _ := http.NewRequest("GET", f.srv.URL+"/events/test.private", nil)
+	req.Header.Set("Authorization", "Bearer "+f.jwks.Sign(t, claims))
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	// The server closes the stream once the token expires; the client sees EOF.
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, resp.Body); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream was not closed after the token expired")
+	}
 }
 
 func TestSSE_RabbitDown(t *testing.T) {

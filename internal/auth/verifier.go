@@ -22,6 +22,7 @@ type Identity struct {
 	Sub           string
 	Roles         map[string]struct{}
 	Authenticated bool
+	ExpiresAt     time.Time // token exp; zero when unauthenticated
 }
 
 type Verifier struct {
@@ -102,6 +103,9 @@ func (v *Verifier) Verify(token string) (Identity, error) {
 		return Identity{}, fmt.Errorf("invalid token: missing subject")
 	}
 	id := Identity{Sub: sub, Roles: map[string]struct{}{}, Authenticated: true}
+	if exp, e := claims.GetExpirationTime(); e == nil && exp != nil {
+		id.ExpiresAt = exp.Time
+	}
 	if raw, ok := claims[rolesClaim].(map[string]any); ok {
 		for role := range raw {
 			id.Roles[role] = struct{}{}
