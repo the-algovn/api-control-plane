@@ -89,7 +89,10 @@ func (v *Verifier) Verify(token string) (Identity, error) {
 	if err != nil {
 		return Identity{}, fmt.Errorf("invalid token: %w", err)
 	}
-	sub, _ := claims.GetSubject()
+	sub, err := claims.GetSubject()
+	if err != nil || sub == "" {
+		return Identity{}, fmt.Errorf("invalid token: missing subject")
+	}
 	id := Identity{Sub: sub, Roles: map[string]struct{}{}, Authenticated: true}
 	if raw, ok := claims[rolesClaim].(map[string]any); ok {
 		for role := range raw {

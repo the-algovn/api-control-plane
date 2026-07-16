@@ -61,6 +61,18 @@ func TestVerify(t *testing.T) {
 	// garbage
 	_, err = v.Verify("not.a.jwt")
 	require.Error(t, err)
+
+	// missing subject
+	c = validClaims()
+	delete(c, "sub")
+	_, err = v.Verify(jwks.Sign(t, c))
+	require.Error(t, err)
+
+	// empty subject
+	c = validClaims()
+	c["sub"] = ""
+	_, err = v.Verify(jwks.Sign(t, c))
+	require.Error(t, err)
 }
 
 func TestAuthorize(t *testing.T) {
