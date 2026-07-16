@@ -23,15 +23,15 @@ var (
 // header. Rules are validated at config-load time (config.ValidRule); an
 // unknown rule here fails closed as 403.
 func Authorize(v *Verifier, rule, authorization string) (Identity, *AuthError) {
-	token, hasToken := strings.CutPrefix(authorization, "Bearer ")
-	if authorization != "" && !hasToken {
-		return Identity{}, errUnauthorized // non-Bearer Authorization header
+	token, present, malformed := parseBearer(authorization)
+	if malformed {
+		return Identity{}, errUnauthorized // header present but not a valid Bearer token
 	}
 
-	if rule == "anonymous" && !hasToken {
+	if rule == "anonymous" && !present {
 		return Identity{}, nil
 	}
-	if !hasToken {
+	if !present {
 		return Identity{}, errUnauthorized
 	}
 
@@ -54,4 +54,24 @@ func Authorize(v *Verifier, rule, authorization string) (Identity, *AuthError) {
 	default:
 		return Identity{}, errForbidden
 	}
+}
+
+// parseBearer extracts the token from an Authorization header. The auth scheme
+// is matched case-insensitively per RFC 6750. It returns present when the
+// header is a well-formed "Bearer <token>" with a non-empty token, and
+// malformed when a non-empty header is not a valid bearer token (wrong scheme,
+// missing space, or empty token). An empty header is neither (no credentials).
+func parseBearer(authorization string) (token string, present, malformed bool) {
+	if authorization == "" {
+		return "", false, false
+	}
+	const scheme = "bearer "
+	if len(authorization) < len(scheme) || !strings.EqualFold(authorization[:len(scheme)], scheme) {
+		return "", false, true
+	}
+	token = strings.TrimSpace(authorization[len(scheme):])
+	if token == "" {
+		return "", false, true
+	}
+	return token, true, false
 }

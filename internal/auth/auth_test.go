@@ -65,7 +65,8 @@ func TestVerify(t *testing.T) {
 
 func TestAuthorize(t *testing.T) {
 	v, jwks := newVerifier(t)
-	valid := "Bearer " + jwks.Sign(t, validClaims())
+	signed := jwks.Sign(t, validClaims())
+	valid := "Bearer " + signed
 	noRoles := validClaims()
 	delete(noRoles, "urn:zitadel:iam:org:project:roles")
 	member := "Bearer " + jwks.Sign(t, noRoles)
@@ -83,6 +84,11 @@ func TestAuthorize(t *testing.T) {
 		{"role match", "role:admin", valid, 0, "user-123"},
 		{"role missing", "role:admin", member, 403, ""},
 		{"role no token", "role:admin", "", 401, ""},
+		{"lowercase bearer scheme", "authenticated", "bearer " + signed, 0, "user-123"},
+		{"uppercase BEARER scheme", "authenticated", "BEARER " + signed, 0, "user-123"},
+		{"empty bearer token", "authenticated", "Bearer ", 401, ""},
+		{"bearer without space", "authenticated", "Bearer", 401, ""},
+		{"non-bearer scheme", "authenticated", "Basic abc123", 401, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
