@@ -81,7 +81,7 @@ channels:
 	jwksSrv := jwks.Server(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	verifier := auth.NewVerifier(ctx, issuer, jwksSrv.URL, logger)
+	verifier := auth.NewVerifier(ctx, issuer, jwksSrv.URL, nil, logger)
 	require.Eventually(t, verifier.Ready, 5*time.Second, 20*time.Millisecond)
 
 	backends := transcode.NewRegistry(logger)

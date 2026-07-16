@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -24,8 +25,9 @@ type Identity struct {
 }
 
 type Verifier struct {
-	issuer string
-	kf     atomic.Pointer[jwt.Keyfunc]
+	issuer    string
+	audiences []string // accepted aud values; empty disables the check
+	kf        atomic.Pointer[jwt.Keyfunc]
 }
 
 // NewVerifier starts a background loop that fetches the JWKS with backoff.
@@ -34,8 +36,8 @@ type Verifier struct {
 // error is not swallowed (NoErrorReturnFirstHTTPReq: false), so an
 // unreachable JWKS endpoint keeps the verifier not-ready and retrying
 // instead of reporting ready with an empty key set.
-func NewVerifier(ctx context.Context, issuer, jwksURL string, logger *slog.Logger) *Verifier {
-	v := &Verifier{issuer: issuer}
+func NewVerifier(ctx context.Context, issuer, jwksURL string, audiences []string, logger *slog.Logger) *Verifier {
+	v := &Verifier{issuer: issuer, audiences: audiences}
 	go func() {
 		backoff := time.Second
 		noSwallow := false
@@ -89,6 +91,12 @@ func (v *Verifier) Verify(token string) (Identity, error) {
 	if err != nil {
 		return Identity{}, fmt.Errorf("invalid token: %w", err)
 	}
+	if len(v.audiences) > 0 {
+		aud, _ := claims.GetAudience()
+		if !audienceAllowed(v.audiences, aud) {
+			return Identity{}, fmt.Errorf("invalid token: audience %v not accepted", []string(aud))
+		}
+	}
 	sub, err := claims.GetSubject()
 	if err != nil || sub == "" {
 		return Identity{}, fmt.Errorf("invalid token: missing subject")
@@ -100,4 +108,15 @@ func (v *Verifier) Verify(token string) (Identity, error) {
 		}
 	}
 	return id, nil
+}
+
+// audienceAllowed reports whether the token's aud claim contains at least one
+// of the accepted audiences.
+func audienceAllowed(allowed []string, aud jwt.ClaimStrings) bool {
+	for _, a := range aud {
+		if slices.Contains(allowed, a) {
+			return true
+		}
+	}
+	return false
 }

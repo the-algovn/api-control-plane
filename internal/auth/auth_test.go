@@ -21,7 +21,7 @@ func newVerifier(t *testing.T) (*Verifier, *authtest.JWKS) {
 	srv := jwks.Server(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	v := NewVerifier(ctx, issuer, srv.URL, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	v := NewVerifier(ctx, issuer, srv.URL, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.Eventually(t, v.Ready, 5*time.Second, 20*time.Millisecond)
 	return v, jwks
 }
@@ -75,6 +75,38 @@ func TestVerify(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestVerify_Audience(t *testing.T) {
+	jwks := authtest.NewJWKS(t)
+	srv := jwks.Server(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	v := NewVerifier(ctx, issuer, srv.URL, []string{"api.algovn.com"}, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.Eventually(t, v.Ready, 5*time.Second, 20*time.Millisecond)
+
+	// matching audience (single string)
+	c := validClaims()
+	c["aud"] = "api.algovn.com"
+	id, err := v.Verify(jwks.Sign(t, c))
+	require.NoError(t, err)
+	require.Equal(t, "user-123", id.Sub)
+
+	// matching audience within a list
+	c = validClaims()
+	c["aud"] = []string{"some-other-client", "api.algovn.com"}
+	_, err = v.Verify(jwks.Sign(t, c))
+	require.NoError(t, err)
+
+	// wrong audience (e.g. a token minted for another client)
+	c = validClaims()
+	c["aud"] = "some-other-client"
+	_, err = v.Verify(jwks.Sign(t, c))
+	require.Error(t, err)
+
+	// missing audience
+	_, err = v.Verify(jwks.Sign(t, validClaims()))
+	require.Error(t, err)
+}
+
 func TestAuthorize(t *testing.T) {
 	v, jwks := newVerifier(t)
 	signed := jwks.Sign(t, validClaims())
@@ -125,7 +157,7 @@ func TestAuthorize_NotReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// point at a dead JWKS endpoint: verifier never becomes ready
-	v := NewVerifier(ctx, issuer, "http://127.0.0.1:1/jwks", slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	v := NewVerifier(ctx, issuer, "http://127.0.0.1:1/jwks", nil, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	_, aerr := Authorize(v, "authenticated", "Bearer whatever")
 	require.NotNil(t, aerr)

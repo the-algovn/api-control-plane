@@ -43,6 +43,16 @@ func main() {
 	}
 	issuer := env("ISSUER", "https://id.algovn.com")
 	jwksURL := env("JWKS_URL", strings.TrimSuffix(issuer, "/")+"/oauth/v2/keys")
+	var audiences []string
+	for _, a := range strings.Split(os.Getenv("AUDIENCE"), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			audiences = append(audiences, a)
+		}
+	}
+	if len(audiences) == 0 {
+		logger.Error("AUDIENCE is required (comma-separated accepted token audiences)")
+		os.Exit(1)
+	}
 	listenAddr := env("LISTEN_ADDR", ":8080")
 	metricsAddr := env("METRICS_ADDR", ":9091")
 	corsOrigins := strings.Split(env("CORS_ORIGINS", "https://*.algovn.com,https://algovn.com"), ",")
@@ -68,7 +78,7 @@ func main() {
 	store.OnReloadError = func(error) { metrics.ReloadErrors.Inc() }
 	go store.Watch(ctx, logger)
 
-	verifier := auth.NewVerifier(ctx, issuer, jwksURL, logger)
+	verifier := auth.NewVerifier(ctx, issuer, jwksURL, audiences, logger)
 
 	backends := transcode.NewRegistry(logger)
 	defer backends.Close()
