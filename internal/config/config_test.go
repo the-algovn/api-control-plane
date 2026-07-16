@@ -70,6 +70,42 @@ func TestLoadDir_Valid(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestLoadDir_DefaultRuleFallback(t *testing.T) {
+	dir := t.TempDir()
+	// /x omits rule -> inherits defaultRule; /y sets it explicitly; channel omits rule.
+	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: s:9090\ndefaultRule: role:admin\nroutes:\n"+
+		"  - {method: p.S/M, verb: GET, path: /x}\n"+
+		"  - {method: p.S/N, verb: GET, path: /y, rule: anonymous}\n"+
+		"channels:\n"+
+		"  - {name: a.evt}\n")
+	snap, err := LoadDir(dir)
+	require.NoError(t, err)
+
+	m, ok := snap.Route("GET", "/a/x")
+	require.True(t, ok)
+	require.Equal(t, "role:admin", m.Rule, "omitted route rule inherits defaultRule")
+
+	m, ok = snap.Route("GET", "/a/y")
+	require.True(t, ok)
+	require.Equal(t, "anonymous", m.Rule, "explicit route rule overrides defaultRule")
+
+	cr, ok := snap.ChannelRule("a.evt")
+	require.True(t, ok)
+	require.Equal(t, "role:admin", cr, "omitted channel rule inherits defaultRule")
+}
+
+func TestLoadDir_DefaultRuleFallsBackToAuthenticated(t *testing.T) {
+	dir := t.TempDir()
+	// no defaultRule -> authenticated; route omits rule -> inherits authenticated.
+	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: s:9090\nroutes:\n"+
+		"  - {method: p.S/M, verb: GET, path: /x}\n")
+	snap, err := LoadDir(dir)
+	require.NoError(t, err)
+	m, ok := snap.Route("GET", "/a/x")
+	require.True(t, ok)
+	require.Equal(t, "authenticated", m.Rule)
+}
+
 func TestLoadDir_UpstreamSchemeNormalized(t *testing.T) {
 	dir := t.TempDir()
 	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: svc.ns.svc:9090\n")

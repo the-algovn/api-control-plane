@@ -208,15 +208,22 @@ func validate(r *Registration) error {
 		if !pathRe.MatchString(rt.Path) {
 			return fmt.Errorf("route %s: path %q must match %s", rt.Method, rt.Path, pathRe)
 		}
-		if !ValidRule(rt.Rule) {
+		// An omitted rule inherits the registration defaultRule (already
+		// defaulted and validated above); an explicit rule must be valid.
+		if rt.Rule == "" {
+			rt.Rule = r.DefaultRule
+		} else if !ValidRule(rt.Rule) {
 			return fmt.Errorf("route %s: invalid rule %q", rt.Method, rt.Rule)
 		}
 	}
-	for _, ch := range r.Channels {
+	for i := range r.Channels {
+		ch := &r.Channels[i]
 		if !channelRe.MatchString(ch.Name) {
 			return fmt.Errorf("channel %q must match <product>.<topic>", ch.Name)
 		}
-		if !ValidRule(ch.Rule) {
+		if ch.Rule == "" {
+			ch.Rule = r.DefaultRule
+		} else if !ValidRule(ch.Rule) {
 			return fmt.Errorf("channel %s: invalid rule %q", ch.Name, ch.Rule)
 		}
 	}
