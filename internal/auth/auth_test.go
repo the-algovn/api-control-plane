@@ -70,6 +70,9 @@ func TestAuthorize(t *testing.T) {
 	noRoles := validClaims()
 	delete(noRoles, "urn:zitadel:iam:org:project:roles")
 	member := "Bearer " + jwks.Sign(t, noRoles)
+	expiredClaims := validClaims()
+	expiredClaims["exp"] = time.Now().Add(-time.Hour).Unix()
+	expired := "Bearer " + jwks.Sign(t, expiredClaims)
 
 	cases := []struct {
 		name, rule, authz string
@@ -78,7 +81,9 @@ func TestAuthorize(t *testing.T) {
 	}{
 		{"anon no token", "anonymous", "", 0, ""},
 		{"anon valid token", "anonymous", valid, 0, "user-123"},
-		{"anon bad token", "anonymous", "Bearer garbage", 401, ""},
+		{"anon bad token degrades to anonymous", "anonymous", "Bearer garbage", 0, ""},
+		{"anon expired token degrades to anonymous", "anonymous", expired, 0, ""},
+		{"anon non-bearer header degrades to anonymous", "anonymous", "Basic abc123", 0, ""},
 		{"authed no token", "authenticated", "", 401, ""},
 		{"authed valid", "authenticated", valid, 0, "user-123"},
 		{"role match", "role:admin", valid, 0, "user-123"},
@@ -116,6 +121,11 @@ func TestAuthorize_NotReady(t *testing.T) {
 
 	// anonymous without a token still works while JWKS is down
 	id, aerr := Authorize(v, "anonymous", "")
+	require.Nil(t, aerr)
+	require.False(t, id.Authenticated)
+
+	// anonymous WITH a token also degrades to anonymous while JWKS is down
+	id, aerr = Authorize(v, "anonymous", "Bearer whatever")
 	require.Nil(t, aerr)
 	require.False(t, id.Authenticated)
 }

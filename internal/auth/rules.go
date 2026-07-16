@@ -24,12 +24,21 @@ var (
 // unknown rule here fails closed as 403.
 func Authorize(v *Verifier, rule, authorization string) (Identity, *AuthError) {
 	token, present, malformed := parseBearer(authorization)
-	if malformed {
-		return Identity{}, errUnauthorized // header present but not a valid Bearer token
+
+	// Anonymous routes never reject on credentials: a valid token yields an
+	// identity, anything else (absent, malformed, invalid, or keys-not-ready)
+	// falls back to unauthenticated access.
+	if rule == "anonymous" {
+		if present {
+			if id, err := v.Verify(token); err == nil {
+				return id, nil
+			}
+		}
+		return Identity{}, nil
 	}
 
-	if rule == "anonymous" && !present {
-		return Identity{}, nil
+	if malformed {
+		return Identity{}, errUnauthorized // header present but not a valid Bearer token
 	}
 	if !present {
 		return Identity{}, errUnauthorized
@@ -44,7 +53,7 @@ func Authorize(v *Verifier, rule, authorization string) (Identity, *AuthError) {
 	}
 
 	switch {
-	case rule == "anonymous", rule == "authenticated":
+	case rule == "authenticated":
 		return id, nil
 	case strings.HasPrefix(rule, "role:"):
 		if _, ok := id.Roles[strings.TrimPrefix(rule, "role:")]; ok {
