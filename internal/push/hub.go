@@ -1,4 +1,4 @@
-// Package push fans RabbitMQ events out to SSE subscribers.
+// Package push fans Kafka sse.* frames out to SSE subscribers via a generic Hub.
 package push
 
 import (

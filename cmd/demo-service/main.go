@@ -11,12 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -30,16 +27,11 @@ import (
 
 type server struct {
 	demov1.UnimplementedDemoServiceServer
-	logger  *slog.Logger
-	publish func(channel string, body []byte)
+	logger *slog.Logger
 }
 
 func (s *server) Ping(_ context.Context, req *demov1.PingRequest) (*demov1.PingResponse, error) {
 	msg := "pong: " + req.GetMessage()
-	if s.publish != nil {
-		body, _ := json.Marshal(map[string]string{"message": msg})
-		s.publish("demo.ping", body)
-	}
 	return &demov1.PingResponse{Message: msg}, nil
 }
 
@@ -78,9 +70,6 @@ func main() {
 	defer stop()
 
 	srv := &server{logger: logger}
-	if url := os.Getenv("AMQP_URL"); url != "" {
-		srv.publish = newPublisher(ctx, url, logger)
-	}
 
 	lis, err := net.Listen("tcp", ":9090")
 	if err != nil {
@@ -105,51 +94,5 @@ func main() {
 	if err := gs.Serve(lis); err != nil {
 		logger.Error("serve failed", "err", err)
 		os.Exit(1)
-	}
-}
-
-// newPublisher returns a fire-and-forget AMQP publish func; failures are
-// logged, never fatal — events are best-effort by design.
-func newPublisher(ctx context.Context, url string, logger *slog.Logger) func(string, []byte) {
-	type conn struct {
-		ch *amqp.Channel
-		c  *amqp.Connection
-	}
-	var mu sync.Mutex // Ping handlers run concurrently across connections
-	var cur *conn
-	dial := func() *conn {
-		c, err := amqp.Dial(url)
-		if err != nil {
-			logger.Warn("amqp dial failed", "err", err)
-			return nil
-		}
-		ch, err := c.Channel()
-		if err != nil {
-			_ = c.Close()
-			return nil
-		}
-		if err := ch.ExchangeDeclare("events", "topic", true, false, false, false, nil); err != nil {
-			_ = c.Close()
-			return nil
-		}
-		return &conn{ch: ch, c: c}
-	}
-	return func(channel string, body []byte) {
-		mu.Lock()
-		defer mu.Unlock()
-		if cur == nil || cur.c.IsClosed() || cur.ch.IsClosed() {
-			cur = dial()
-			if cur == nil {
-				return
-			}
-		}
-		pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		err := cur.ch.PublishWithContext(pubCtx, "events", channel, false, false,
-			amqp.Publishing{ContentType: "application/json", Body: body})
-		if err != nil {
-			logger.Warn("publish failed", "channel", channel, "err", err)
-			cur = nil
-		}
 	}
 }
