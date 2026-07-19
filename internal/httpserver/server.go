@@ -136,7 +136,8 @@ func (s *Server) count(route string, code int) {
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	channel := r.PathValue("channel")
-	rule, ok := s.Store.Get().ChannelRule(channel)
+	snap := s.Store.Get()
+	rule, ok := snap.ChannelRule(channel)
 	if !ok {
 		writeError(w, 404, "not_found", "unknown channel")
 		return
@@ -145,6 +146,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if aerr != nil {
 		writeError(w, aerr.Status, aerr.Code, aerr.Message)
 		return
+	}
+	// Per-user channels deliver only the caller's frames: derive the hub channel
+	// from the authenticated sub (never the URL) so a client can never read
+	// another user's stream. The metric label stays the base channel — a per-sub
+	// label would be unbounded cardinality.
+	hubChannel := channel
+	if snap.ChannelPerUser(channel) {
+		if id.Sub == "" {
+			writeError(w, 401, "unauthenticated", "per-user channel requires authentication")
+			return
+		}
+		hubChannel = channel + "." + id.Sub
 	}
 	if s.RabbitConnected == nil || !s.RabbitConnected() {
 		writeError(w, 503, "unavailable", "event stream temporarily unavailable")
@@ -164,7 +177,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sub := s.Hub.Subscribe(channel)
+	sub := s.Hub.Subscribe(hubChannel)
 	defer sub.Close()
 	s.Metrics.SSEClients.WithLabelValues(channel).Inc()
 	defer s.Metrics.SSEClients.WithLabelValues(channel).Dec()

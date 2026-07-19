@@ -49,8 +49,9 @@ type Route struct {
 }
 
 type Channel struct {
-	Name string `yaml:"name"`
-	Rule string `yaml:"rule"`
+	Name    string `yaml:"name"`
+	Rule    string `yaml:"rule"`
+	PerUser bool   `yaml:"perUser"`
 }
 
 type Registration struct {
@@ -83,6 +84,7 @@ type RouteMatch struct {
 type Snapshot struct {
 	regs      map[string]*Registration // key: prefix
 	channels  map[string]string        // channel name -> rule
+	perUser   map[string]bool          // channel name -> perUser flag
 	routes    map[routeKey]RouteMatch  // key: {verb, full path}
 	pathVerbs map[string][]string      // full path -> sorted verbs (for 405/Allow)
 }
@@ -101,6 +103,10 @@ func (s *Snapshot) ChannelRule(name string) (string, bool) {
 	rule, ok := s.channels[name]
 	return rule, ok
 }
+
+// ChannelPerUser reports whether a channel delivers per-user frames (the SSE
+// handler subscribes the caller to "<name>.<sub>" instead of "<name>").
+func (s *Snapshot) ChannelPerUser(name string) bool { return s.perUser[name] }
 
 func (s *Snapshot) Registrations() []*Registration {
 	out := make([]*Registration, 0, len(s.regs))
@@ -121,6 +127,7 @@ func LoadDir(dir string) (*Snapshot, error) {
 	snap := &Snapshot{
 		regs:      map[string]*Registration{},
 		channels:  map[string]string{},
+		perUser:   map[string]bool{},
 		routes:    map[routeKey]RouteMatch{},
 		pathVerbs: map[string][]string{},
 	}
@@ -169,6 +176,7 @@ func LoadDir(dir string) (*Snapshot, error) {
 				return nil, fmt.Errorf("%s: duplicate channel %s", e.Name(), ch.Name)
 			}
 			snap.channels[ch.Name] = ch.Rule
+			snap.perUser[ch.Name] = ch.PerUser
 		}
 	}
 	for p := range snap.pathVerbs {
@@ -225,6 +233,9 @@ func validate(r *Registration) error {
 			ch.Rule = r.DefaultRule
 		} else if !ValidRule(ch.Rule) {
 			return fmt.Errorf("channel %s: invalid rule %q", ch.Name, ch.Rule)
+		}
+		if ch.PerUser && ch.Rule == "anonymous" {
+			return fmt.Errorf("channel %s: perUser requires an authenticated rule", ch.Name)
 		}
 	}
 	return nil

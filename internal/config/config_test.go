@@ -158,6 +158,32 @@ func TestLoadDir_VerbNormalizedAndSameMethodTwoPaths(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestPerUserChannel(t *testing.T) {
+	dir := t.TempDir()
+	writeReg(t, dir, "the-button.yaml", `
+prefix: /the-button
+upstream: dns:///x:9090
+defaultRule: anonymous
+channels:
+  - { name: the-button.counter, rule: anonymous }
+  - { name: the-button.user, rule: authenticated, perUser: true }
+`)
+	snap, err := LoadDir(dir)
+	require.NoError(t, err)
+	require.True(t, snap.ChannelPerUser("the-button.user"))
+	require.False(t, snap.ChannelPerUser("the-button.counter"))
+
+	badDir := t.TempDir()
+	writeReg(t, badDir, "bad.yaml", `
+prefix: /the-button
+upstream: dns:///x:9090
+channels:
+  - { name: the-button.user, rule: anonymous, perUser: true }
+`)
+	_, err = LoadDir(badDir)
+	require.ErrorContains(t, err, "perUser requires an authenticated rule")
+}
+
 func TestLoadDir_CrossFileCollisions(t *testing.T) {
 	dir := t.TempDir()
 	writeReg(t, dir, "a.yaml", "prefix: /a\nupstream: s1:9090\nchannels: [{name: a.x, rule: anonymous}]\n")

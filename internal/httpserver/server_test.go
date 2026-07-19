@@ -73,6 +73,9 @@ channels:
     rule: anonymous
   - name: test.private
     rule: authenticated
+  - name: test.user
+    rule: authenticated
+    perUser: true
 `
 	require.NoError(t, os.WriteFile(dir+"/test.yaml", []byte(regYAML), 0o644))
 	store, err := config.NewStore(dir)
@@ -291,6 +294,86 @@ func TestSSE(t *testing.T) {
 	waitFor(`data:   "total": 2`)
 	waitFor("data: }")
 	waitFor("") // blank line terminates the frame
+}
+
+func TestSSE_PerUserChannel(t *testing.T) {
+	f := newFixture(t, true)
+
+	openStream := func(authz string) *bufio.Reader {
+		req, _ := http.NewRequest("GET", f.srv.URL+"/events/test.user", nil)
+		req.Header.Set("Authorization", authz)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { resp.Body.Close() })
+		require.Equal(t, 200, resp.StatusCode)
+		return bufio.NewReader(resp.Body)
+	}
+	readLines := func(r *bufio.Reader) chan string {
+		lines := make(chan string, 10)
+		go func() {
+			for {
+				l, err := r.ReadString('\n')
+				if err != nil {
+					close(lines)
+					return
+				}
+				lines <- strings.TrimRight(l, "\n")
+			}
+		}()
+		return lines
+	}
+	waitFor := func(lines chan string, want string) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case l := <-lines:
+				if l == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("SSE line %q not received", want)
+			}
+		}
+	}
+
+	// user-1 and user-2 each open their own authenticated stream to the SAME
+	// channel path; the hub channel each is subscribed to is derived from
+	// their own sub, never from the URL.
+	user1Lines := readLines(openStream(f.token(t))) // sub "user-1"
+	user2Token := "Bearer " + f.jwks.Sign(t, jwt.MapClaims{"iss": issuer, "sub": "user-2", "exp": time.Now().Add(time.Hour).Unix()})
+	user2Lines := readLines(openStream(user2Token))
+
+	require.Eventually(t, func() bool {
+		return len(f.hub.ActiveChannels()) == 2
+	}, 2*time.Second, 20*time.Millisecond)
+
+	waitFor(user1Lines, "retry: 3000")
+	waitFor(user1Lines, "") // blank line terminates the retry preamble
+	waitFor(user2Lines, "retry: 3000")
+	waitFor(user2Lines, "") // blank line terminates the retry preamble
+
+	// A frame published to user-1's sub-channel must reach only user-1's
+	// stream, never user-2's (no cross-user leakage), and vice versa.
+	f.hub.Publish("test.user.user-1", []byte(`{"total":1}`))
+	waitFor(user1Lines, `data: {"total":1}`)
+	waitFor(user1Lines, "")
+
+	select {
+	case l := <-user2Lines:
+		t.Fatalf("user-2 stream unexpectedly received a line: %q", l)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	f.hub.Publish("test.user.user-2", []byte(`{"total":2}`))
+	waitFor(user2Lines, `data: {"total":2}`)
+	waitFor(user2Lines, "")
+
+	select {
+	case l := <-user1Lines:
+		t.Fatalf("user-1 stream unexpectedly received a line: %q", l)
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 func TestSSE_TokenExpiryBoundsStream(t *testing.T) {
