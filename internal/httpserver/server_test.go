@@ -37,7 +37,7 @@ type fixture struct {
 	server  *Server
 }
 
-func newFixture(t *testing.T, rabbitConnected bool) *fixture {
+func newFixture(t *testing.T, pushConnected bool) *fixture {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	upstream := testsvc.StartServer(t)
@@ -96,10 +96,10 @@ channels:
 	metrics := observability.New(prometheus.NewRegistry())
 	s := &Server{
 		Store: store, Verifier: verifier, Backends: backends, Hub: hub,
-		RabbitConnected: func() bool { return rabbitConnected },
-		CORSOrigins:     []string{"https://*.algovn.com", "https://algovn.com"},
-		Logger:          logger,
-		Metrics:         metrics,
+		PushConnected: func() bool { return pushConnected },
+		CORSOrigins:   []string{"https://*.algovn.com", "https://algovn.com"},
+		Logger:        logger,
+		Metrics:       metrics,
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -397,7 +397,7 @@ func TestSSE_TokenExpiryBoundsStream(t *testing.T) {
 	}
 }
 
-func TestSSE_RabbitDown(t *testing.T) {
+func TestSSE_PushDown(t *testing.T) {
 	f := newFixture(t, false)
 	resp := do(t, "GET", f.srv.URL+"/events/test.events", "", "")
 	require.Equal(t, 503, resp.StatusCode)

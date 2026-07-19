@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -61,7 +62,12 @@ func main() {
 		logger.Error("SSE_MAX_CONNS must be a positive integer", "value", env("SSE_MAX_CONNS", "15000"))
 		os.Exit(1)
 	}
-	amqpURL := os.Getenv("AMQP_URL")
+	var kafkaBrokers []string
+	for _, b := range strings.Split(os.Getenv("KAFKA_BROKERS"), ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			kafkaBrokers = append(kafkaBrokers, b)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -97,18 +103,28 @@ func main() {
 	}()
 
 	hub := push.NewHub()
-	rabbitConnected := func() bool { return false }
-	if amqpURL != "" {
-		consumer := push.NewConsumer(amqpURL, hub, logger)
-		go consumer.Run(ctx)
-		rabbitConnected = consumer.Connected
+	pushConnected := func() bool { return false }
+	if len(kafkaBrokers) > 0 {
+		groupID := "sse-" + uuid.NewString()
+		routes := []push.TopicRoute{
+			{Topic: "sse.counter", Channel: "the-button.counter"},
+			{Topic: "sse.leaderboard", Channel: "the-button.leaderboard"},
+			{Topic: "sse.user", Channel: "the-button.user", PerUser: true},
+		}
+		consumer, err := push.NewKafkaConsumer(kafkaBrokers, groupID, hub, routes, logger)
+		if err != nil {
+			logger.Error("kafka consumer", "err", err)
+			os.Exit(1)
+		}
+		go func() { _ = consumer.Run(ctx) }()
+		pushConnected = consumer.Connected
 	} else {
-		logger.Warn("AMQP_URL not set; /events endpoints will return 503")
+		logger.Warn("KAFKA_BROKERS not set; /events endpoints will return 503")
 	}
 
 	srv := &httpserver.Server{
 		Store: store, Verifier: verifier, Backends: backends, Hub: hub,
-		RabbitConnected: rabbitConnected, CORSOrigins: corsOrigins,
+		PushConnected: pushConnected, CORSOrigins: corsOrigins,
 		SSEMaxConns: sseMaxConns,
 		Logger:      logger, Metrics: metrics,
 	}

@@ -29,15 +29,15 @@ const (
 var forwardedHeaders = []string{"authorization", "x-request-id", "accept-language"}
 
 type Server struct {
-	Store           *config.Store
-	Verifier        *auth.Verifier
-	Backends        *transcode.Registry
-	Hub             *push.Hub
-	RabbitConnected func() bool
-	CORSOrigins     []string
-	SSEMaxConns     int // global cap on concurrent SSE connections; 0 = unlimited
-	Logger          *slog.Logger
-	Metrics         *observability.Metrics
+	Store         *config.Store
+	Verifier      *auth.Verifier
+	Backends      *transcode.Registry
+	Hub           *push.Hub
+	PushConnected func() bool
+	CORSOrigins   []string
+	SSEMaxConns   int // global cap on concurrent SSE connections; 0 = unlimited
+	Logger        *slog.Logger
+	Metrics       *observability.Metrics
 
 	sseConns atomic.Int64
 }
@@ -159,7 +159,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		hubChannel = channel + "." + id.Sub
 	}
-	if s.RabbitConnected == nil || !s.RabbitConnected() {
+	if s.PushConnected == nil || !s.PushConnected() {
 		writeError(w, 503, "unavailable", "event stream temporarily unavailable")
 		return
 	}
