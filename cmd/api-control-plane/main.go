@@ -110,6 +110,8 @@ func main() {
 			{Topic: "sse.counter", Channel: "the-button.counter"},
 			{Topic: "sse.leaderboard", Channel: "the-button.leaderboard"},
 			{Topic: "sse.user", Channel: "the-button.user", PerUser: true},
+			{Topic: "sse.radio.nowplaying", Channel: "radio.nowplaying"},
+			{Topic: "sse.radio.queue", Channel: "radio.queue"},
 		}
 		consumer, err := push.NewKafkaConsumer(kafkaBrokers, groupID, hub, routes, logger)
 		if err != nil {
